@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Voice LLM Docker</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 50px; background: #222; color: #fff; }
+        button { padding: 15px 30px; font-size: 18px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 5px; }
+        button.recording { background: #dc3545; }
+        #log { margin-top: 20px; white-space: pre-wrap; text-align: left; max-width: 600px; margin-left: auto; margin-right: auto; }
+    </style>
+</head>
+<body>
+    <h1>Voice LLM Interface</h1>
+    <button id="recordBtn">Нажать чтобы говорить</button>
+    <div id="log"></div>
+
+    <script>
+        const recordBtn = document.getElementById('recordBtn');
+        const logDiv = document.getElementById('log');
+        let ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + "/ws");
+        let mediaRecorder;
+        let audioChunks = [];
+
+        ws.onmessage = async (event) => {
+            if (typeof event.data === 'string') {
+                logDiv.innerHTML += event.data + "\n";
+            } else {
+                // Пришли аудио байты (Blob)
+                const audioBlob = new Blob([event.data], { type: 'audio/mp3' });
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audio = new Audio(audioUrl);
+                audio.play();
+            }
+        };
+
+        recordBtn.onmousedown = async () => {
+            audioChunks = [];
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+            
+            mediaRecorder.ondataavailable = event => {
+                audioChunks.push(event.data);
+            };
+
+            mediaRecorder.onstop = () => {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                ws.send(audioBlob); // Отправляем на сервер
+            };
+
+            mediaRecorder.start();
+            recordBtn.classList.add('recording');
+            recordBtn.innerText = "Слушаю...";
+        };
+
+        recordBtn.onmouseup = () => {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                recordBtn.classList.remove('recording');
+                recordBtn.innerText = "Нажать чтобы говорить";
+            }
+        };
+    </script>
+</body>
+</html>

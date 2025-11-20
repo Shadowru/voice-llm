@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+websockets
+python-multipart
+numpy
+faster-whisper
+llama-cpp-python
+edge-tts
+aiofiles

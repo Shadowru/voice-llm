@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  # --- Reverse Proxy (Traefik) ---
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik
+    restart: unless-stopped
+    command:
+      - "--api.insecure=true" # Панель управления (не для продакшена, но удобно для отладки)
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Настройка Let's Encrypt (http challenge)
+      - "--certificatesresolvers.myresolver.acme.httpchallenge=true"
+      - "--certificatesresolvers.myresolver.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+      # - "8080:8080" # Раскомментируйте для доступа к Dashboard Traefik
+    volumes:
+      - "./letsencrypt:/letsencrypt"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+
+  # --- Application Backend ---
+  backend:
+    build: .
+    container_name: voice_llm_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./app/models:/app/models # Монтируем папку с моделями
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    labels:
+      - "traefik.enable=true"
+      
+      # Роутер для HTTPS
+      - "traefik.http.routers.voice-app.rule=Host(`${DOMAIN_NAME}`)"
+      - "traefik.http.routers.voice-app.entrypoints=websecure"
+      - "traefik.http.routers.voice-app.tls.certresolver=myresolver"
+      
+      # Middleware для редиректа HTTP -> HTTPS
+      - "traefik.http.routers.voice-app-http.rule=Host(`${DOMAIN_NAME}`)"
+      - "traefik.http.routers.voice-app-http.entrypoints=web"
+      - "traefik.http.routers.voice-app-http.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      
+      # Указываем порт внутри контейнера
+      - "traefik.http.services.voice-app.loadbalancer.server.port=8000"
+
+      # Настройки для WebSockets (важно!)
+      - "traefik.http.middlewares.sslheader.headers.customrequestheaders.X-Forwarded-Proto=https"
