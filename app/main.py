@@ -43,6 +43,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 tmp.write(data)
                 tmp_path = tmp.name
 
+            print("STT phase...")
             # 2. STT
             segments, _ = stt_model.transcribe(tmp_path, beam_size=5)
             text = " ".join([s.text for s in segments]).strip()
