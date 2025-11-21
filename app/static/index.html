@@ -2,64 +2,221 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Voice LLM Docker</title>
+    <title>Voice LLM (VAD)</title>
     <style>
-        body { font-family: sans-serif; text-align: center; padding: 50px; background: #222; color: #fff; }
-        button { padding: 15px 30px; font-size: 18px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 5px; }
-        button.recording { background: #dc3545; }
-        #log { margin-top: 20px; white-space: pre-wrap; text-align: left; max-width: 600px; margin-left: auto; margin-right: auto; }
+        body { font-family: 'Segoe UI', sans-serif; text-align: center; padding: 20px; background: #1e1e1e; color: #eee; }
+        .container { max-width: 600px; margin: 0 auto; }
+        
+        /* Кнопка */
+        #recordBtn {
+            width: 200px; height: 200px; border-radius: 50%;
+            border: 5px solid #444; background: #333; color: #fff;
+            font-size: 24px; cursor: pointer; outline: none;
+            transition: all 0.2s; user-select: none;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        #recordBtn.recording { background: #d63384; border-color: #fff; box-shadow: 0 0 30px #d63384; }
+        #recordBtn:active { transform: scale(0.95); }
+
+        /* Настройки */
+        .controls { margin: 20px 0; padding: 15px; background: #2a2a2a; border-radius: 10px; }
+        label { cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; gap: 10px;}
+        input[type="checkbox"] { width: 20px; height: 20px; }
+
+        /* Лог */
+        #log { 
+            margin-top: 20px; text-align: left; background: #111; padding: 15px; 
+            border-radius: 5px; height: 300px; overflow-y: auto; font-family: monospace; font-size: 14px;
+            border: 1px solid #333;
+        }
+        .msg-user { color: #4dabf7; margin-bottom: 5px; }
+        .msg-ai { color: #69db7c; margin-bottom: 10px; }
+        
+        /* Визуализатор */
+        #visualizer { width: 100%; height: 10px; background: #333; margin-top: 10px; border-radius: 5px; overflow: hidden; }
+        #volume-bar { height: 100%; width: 0%; background: #d63384; transition: width 0.1s; }
     </style>
 </head>
 <body>
-    <h1>Voice LLM Interface</h1>
-    <button id="recordBtn">Нажать чтобы говорить</button>
-    <div id="log"></div>
+    <div class="container">
+        <h1>Voice Assistant</h1>
+        
+        <div class="controls">
+            <label>
+                <input type="checkbox" id="vadToggle"> 
+                Режим "Свободные руки" (Auto-Send)
+            </label>
+            <div id="visualizer"><div id="volume-bar"></div></div>
+        </div>
+
+        <button id="recordBtn">Push to Talk</button>
+        <div id="log"></div>
+    </div>
 
     <script>
         const recordBtn = document.getElementById('recordBtn');
+        const vadToggle = document.getElementById('vadToggle');
         const logDiv = document.getElementById('log');
-        let ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + "/ws");
+        const volumeBar = document.getElementById('volume-bar');
+
+        // --- Настройки VAD ---
+        const VAD_THRESHOLD = 0.02; // Порог громкости (0.0 - 1.0)
+        const SILENCE_DURATION = 1500; // Сколько ждать тишины (мс) перед отправкой
+
+        let ws;
         let mediaRecorder;
         let audioChunks = [];
+        let audioContext;
+        let analyser;
+        let microphone;
+        let isRecording = false;
+        let silenceTimer = null;
+        let audioQueue = []; // Очередь аудио сообщений
+        let isPlaying = false;
 
-        ws.onmessage = async (event) => {
-            if (typeof event.data === 'string') {
-                logDiv.innerHTML += event.data + "\n";
-            } else {
-                // Пришли аудио байты (Blob)
-                const audioBlob = new Blob([event.data], { type: 'audio/mp3' });
-                const audioUrl = URL.createObjectURL(audioBlob);
-                const audio = new Audio(audioUrl);
-                audio.play();
-            }
-        };
-
-        recordBtn.onmousedown = async () => {
-            audioChunks = [];
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            mediaRecorder = new MediaRecorder(stream);
+        function connectWS() {
+            const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+            ws = new WebSocket(protocol + window.location.host + "/ws");
             
-            mediaRecorder.ondataavailable = event => {
-                audioChunks.push(event.data);
+            ws.onopen = () => log("Система готова. Нажмите кнопку или включите Auto-Send.");
+            ws.onclose = () => { log("Соединение разорвано. Реконнект через 3с..."); setTimeout(connectWS, 3000); };
+            
+            ws.onmessage = async (event) => {
+                if (typeof event.data === 'string') {
+                    // Текстовое сообщение
+                    const text = event.data;
+                    if (text.startsWith("[User]")) log(text, "msg-user");
+                    else if (text.startsWith("[AI]")) log(text, "msg-ai");
+                } else {
+                    // Аудио сообщение (Blob)
+                    const audioBlob = new Blob([event.data], { type: 'audio/mp3' });
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    audioQueue.push(audioUrl);
+                    playQueue();
+                }
             };
+        }
 
-            mediaRecorder.onstop = () => {
-                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                ws.send(audioBlob); // Отправляем на сервер
+        function playQueue() {
+            if (isPlaying || audioQueue.length === 0) return;
+            isPlaying = true;
+            const audio = new Audio(audioQueue.shift());
+            audio.onended = () => {
+                isPlaying = false;
+                playQueue(); // Играем следующее
             };
+            audio.play();
+        }
 
+        function log(msg, className="msg-system") {
+            const div = document.createElement('div');
+            div.textContent = msg;
+            div.className = className;
+            logDiv.appendChild(div);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        // --- Логика Аудио ---
+        async function initAudio() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                // Настройка записи
+                let options = { mimeType: 'audio/webm' };
+                if (!MediaRecorder.isTypeSupported(options.mimeType)) options = {};
+                mediaRecorder = new MediaRecorder(stream, options);
+
+                mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+                mediaRecorder.onstop = () => {
+                    if (audioChunks.length > 0) {
+                        const blob = new Blob(audioChunks, { type: 'audio/wav' });
+                        ws.send(blob);
+                        audioChunks = [];
+                    }
+                };
+
+                // Настройка анализатора (VAD)
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                microphone = audioContext.createMediaStreamSource(stream);
+                microphone.connect(analyser);
+                analyser.fftSize = 256;
+                
+                detectVolume(); // Запуск цикла проверки громкости
+
+            } catch (err) {
+                console.error(err);
+                log("Ошибка доступа к микрофону!");
+            }
+        }
+
+        function detectVolume() {
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            analyser.getByteFrequencyData(dataArray);
+
+            // Считаем среднюю громкость
+            let sum = 0;
+            for(let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+            let average = sum / dataArray.length;
+            let volume = average / 255; // 0.0 to 1.0
+
+            // Визуализация
+            volumeBar.style.width = (volume * 100 * 3) + "%"; // Умножаем для наглядности
+
+            // Логика VAD (только если включен чекбокс)
+            if (vadToggle.checked) {
+                if (volume > VAD_THRESHOLD) {
+                    // Громко:
+                    if (!isRecording) startRecording();
+                    clearTimeout(silenceTimer); // Сбрасываем таймер тишины
+                } else {
+                    // Тихо:
+                    if (isRecording && !silenceTimer) {
+                        // Запускаем таймер остановки
+                        silenceTimer = setTimeout(stopRecording, SILENCE_DURATION);
+                    }
+                }
+            }
+
+            requestAnimationFrame(detectVolume);
+        }
+
+        function startRecording() {
+            if (isRecording) return;
+            isRecording = true;
+            audioChunks = [];
             mediaRecorder.start();
             recordBtn.classList.add('recording');
             recordBtn.innerText = "Слушаю...";
+        }
+
+        function stopRecording() {
+            if (!isRecording) return;
+            isRecording = false;
+            silenceTimer = null;
+            mediaRecorder.stop();
+            recordBtn.classList.remove('recording');
+            recordBtn.innerText = vadToggle.checked ? "Жду голос..." : "Push to Talk";
+        }
+
+        // --- Обработчики событий ---
+        
+        // Кнопка (Push-to-Talk) работает всегда, даже если VAD выключен
+        recordBtn.onmousedown = () => {
+            if (vadToggle.checked) return; // В режиме VAD кнопка не нужна
+            startRecording();
+        };
+        recordBtn.onmouseup = () => {
+            if (vadToggle.checked) return;
+            stopRecording();
         };
 
-        recordBtn.onmouseup = () => {
-            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                mediaRecorder.stop();
-                recordBtn.classList.remove('recording');
-                recordBtn.innerText = "Нажать чтобы говорить";
-            }
+        // Инициализация при первом клике (политика браузеров)
+        document.body.onclick = () => {
+            if (!audioContext) initAudio();
         };
+
+        connectWS();
     </script>
 </body>
 </html>
