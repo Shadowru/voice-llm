@@ -1,52 +1,126 @@
 <!DOCTYPE html>
 <html lang="ru">
+
 <head>
     <meta charset="UTF-8">
     <title>Voice LLM (VAD)</title>
     <style>
-        body { font-family: 'Segoe UI', sans-serif; text-align: center; padding: 20px; background: #1e1e1e; color: #eee; }
-        .container { max-width: 600px; margin: 0 auto; }
-        
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            text-align: center;
+            padding: 20px;
+            background: #1e1e1e;
+            color: #eee;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
         /* Кнопка */
         #recordBtn {
-            width: 200px; height: 200px; border-radius: 50%;
-            border: 5px solid #444; background: #333; color: #fff;
-            font-size: 24px; cursor: pointer; outline: none;
-            transition: all 0.2s; user-select: none;
-            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            width: 200px;
+            height: 200px;
+            border-radius: 50%;
+            border: 5px solid #444;
+            background: #333;
+            color: #fff;
+            font-size: 24px;
+            cursor: pointer;
+            outline: none;
+            transition: all 0.2s;
+            user-select: none;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
         }
-        #recordBtn.recording { background: #d63384; border-color: #fff; box-shadow: 0 0 30px #d63384; }
-        #recordBtn:active { transform: scale(0.95); }
+
+        #recordBtn.recording {
+            background: #d63384;
+            border-color: #fff;
+            box-shadow: 0 0 30px #d63384;
+        }
+
+        #recordBtn:active {
+            transform: scale(0.95);
+        }
 
         /* Настройки */
-        .controls { margin: 20px 0; padding: 15px; background: #2a2a2a; border-radius: 10px; }
-        label { cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; gap: 10px;}
-        input[type="checkbox"] { width: 20px; height: 20px; }
+        .controls {
+            margin: 20px 0;
+            padding: 15px;
+            background: #2a2a2a;
+            border-radius: 10px;
+        }
+
+        label {
+            cursor: pointer;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+        }
 
         /* Лог */
-        #log { 
-            margin-top: 20px; text-align: left; background: #111; padding: 15px; 
-            border-radius: 5px; height: 300px; overflow-y: auto; font-family: monospace; font-size: 14px;
+        #log {
+            margin-top: 20px;
+            text-align: left;
+            background: #111;
+            padding: 15px;
+            border-radius: 5px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 14px;
             border: 1px solid #333;
         }
-        .msg-user { color: #4dabf7; margin-bottom: 5px; }
-        .msg-ai { color: #69db7c; margin-bottom: 10px; }
-        
+
+        .msg-user {
+            color: #4dabf7;
+            margin-bottom: 5px;
+        }
+
+        .msg-ai {
+            color: #69db7c;
+            margin-bottom: 10px;
+        }
+
         /* Визуализатор */
-        #visualizer { width: 100%; height: 10px; background: #333; margin-top: 10px; border-radius: 5px; overflow: hidden; }
-        #volume-bar { height: 100%; width: 0%; background: #d63384; transition: width 0.1s; }
+        #visualizer {
+            width: 100%;
+            height: 10px;
+            background: #333;
+            margin-top: 10px;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+
+        #volume-bar {
+            height: 100%;
+            width: 0%;
+            background: #d63384;
+            transition: width 0.1s;
+        }
     </style>
 </head>
+
 <body>
     <div class="container">
         <h1>Voice Assistant</h1>
-        
+
         <div class="controls">
             <label>
-                <input type="checkbox" id="vadToggle"> 
+                <input type="checkbox" id="vadToggle">
                 Режим "Свободные руки" (Auto-Send)
             </label>
-            <div id="visualizer"><div id="volume-bar"></div></div>
+            <div id="visualizer">
+                <div id="volume-bar"></div>
+            </div>
         </div>
 
         <button id="recordBtn">Push to Talk</button>
@@ -73,14 +147,15 @@
         let silenceTimer = null;
         let audioQueue = []; // Очередь аудио сообщений
         let isPlaying = false;
+        let currentAudio = null; // Храним текущий играющий объект Audio
 
         function connectWS() {
             const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
             ws = new WebSocket(protocol + window.location.host + "/ws");
-            
+
             ws.onopen = () => log("Система готова. Нажмите кнопку или включите Auto-Send.");
             ws.onclose = () => { log("Соединение разорвано. Реконнект через 3с..."); setTimeout(connectWS, 3000); };
-            
+
             ws.onmessage = async (event) => {
                 if (typeof event.data === 'string') {
                     // Текстовое сообщение
@@ -100,15 +175,45 @@
         function playQueue() {
             if (isPlaying || audioQueue.length === 0) return;
             isPlaying = true;
-            const audio = new Audio(audioQueue.shift());
-            audio.onended = () => {
+
+            const url = audioQueue.shift();
+            currentAudio = new Audio(url); // Сохраняем в переменную
+
+            currentAudio.onended = () => {
                 isPlaying = false;
-                playQueue(); // Играем следующее
+                currentAudio = null;
+                playQueue();
             };
-            audio.play();
+
+            currentAudio.play().catch(e => console.log("Auto-play blocked", e));
         }
 
-        function log(msg, className="msg-system") {
+        function stopPlayback() {
+            // 1. Останавливаем текущий звук
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio = null;
+            }
+            // 2. Очищаем очередь (чтобы не договаривал старые фразы)
+            audioQueue = [];
+            isPlaying = false;
+            console.log("Playback stopped (Interrupted)");
+        }
+
+        function startRecording() {
+            if (isRecording) return;
+
+            // !!! ГЛАВНОЕ ИЗМЕНЕНИЕ: Затыкаем бота, когда начинаем слушать !!!
+            stopPlayback();
+
+            isRecording = true;
+            audioChunks = [];
+            mediaRecorder.start();
+            recordBtn.classList.add('recording');
+            recordBtn.innerText = "Слушаю...";
+        }
+
+        function log(msg, className = "msg-system") {
             const div = document.createElement('div');
             div.textContent = msg;
             div.className = className;
@@ -120,7 +225,7 @@
         async function initAudio() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                
+
                 // Настройка записи
                 let options = { mimeType: 'audio/webm' };
                 if (!MediaRecorder.isTypeSupported(options.mimeType)) options = {};
@@ -141,7 +246,7 @@
                 microphone = audioContext.createMediaStreamSource(stream);
                 microphone.connect(analyser);
                 analyser.fftSize = 256;
-                
+
                 detectVolume(); // Запуск цикла проверки громкости
 
             } catch (err) {
@@ -156,7 +261,7 @@
 
             // Считаем среднюю громкость
             let sum = 0;
-            for(let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+            for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
             let average = sum / dataArray.length;
             let volume = average / 255; // 0.0 to 1.0
 
@@ -200,7 +305,7 @@
         }
 
         // --- Обработчики событий ---
-        
+
         // Кнопка (Push-to-Talk) работает всегда, даже если VAD выключен
         recordBtn.onmousedown = () => {
             if (vadToggle.checked) return; // В режиме VAD кнопка не нужна
@@ -219,4 +324,5 @@
         connectWS();
     </script>
 </body>
+
 </html>
