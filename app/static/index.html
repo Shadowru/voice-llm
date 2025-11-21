@@ -60,8 +60,8 @@
         const volumeBar = document.getElementById('volume-bar');
 
         // --- Настройки VAD ---
-        const VAD_THRESHOLD = 0.02; // Порог громкости (0.0 - 1.0)
-        const SILENCE_DURATION = 1500; // Сколько ждать тишины (мс) перед отправкой
+        const VAD_THRESHOLD = 0.2; // Порог громкости (0.0 - 1.0)
+        const SILENCE_DURATION = 500; // Сколько ждать тишины (мс) перед отправкой
 
         let ws;
         let mediaRecorder;
