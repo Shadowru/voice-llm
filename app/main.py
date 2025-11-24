@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
 from llama_cpp import Llama
+from openai import AsyncOpenAI
 
 # --- КОНФИГУРАЦИЯ ---
 CONFIG_FILE = "/app/config.json"
@@ -55,24 +56,41 @@ WHISPER_SIZE = os.getenv("WHISPER_SIZE", "base")
 SILERO_LOCAL_PATH = os.getenv("SILERO_MODEL_PATH", "/app/models/silero_v4_ru.pt")
 SILERO_MODEL_URL = os.getenv("SILERO_MODEL_URL", "https://models.silero.ai/models/tts/ru/v4_ru.pt")
 
+# Новые переменные
+LLM_CTX_SIZE = int(os.getenv("LLM_CTX_SIZE", "2048"))
+USE_OPENAI_API = os.getenv("USE_OPENAI_API", "false").lower() == "true"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "sk-xxx")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
+
 # --- ИНИЦИАЛИЗАЦИЯ МОДЕЛЕЙ ---
 print("--- INIT MODELS ---")
-device = torch.device('cpu') # Silero TTS
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+device = torch.device('cpu')
 
 # 1. Whisper
 print(f"Loading Whisper: {WHISPER_SIZE}...")
 stt_model = WhisperModel(WHISPER_SIZE, device="auto", compute_type="int8")
 
 # 2. LLM
-print(f"Loading LLM: {MODEL_PATH}...")
-if os.path.exists(MODEL_PATH):
-    llm = Llama(model_path=MODEL_PATH, n_ctx=4096, n_gpu_layers=-1, verbose=False)
-else:
-    llm = None
-    print("WARNING: LLM model not found.")
+llm_local = None
+aclient = None
 
-# 3. Silero TTS
+if USE_OPENAI_API:
+    print(f"Connecting to OpenAI API: {OPENAI_BASE_URL} [{OPENAI_MODEL}]")
+    aclient = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+else:
+    print(f"Loading Local LLM: {MODEL_PATH} (Ctx: {LLM_CTX_SIZE})...")
+    if os.path.exists(MODEL_PATH):
+        llm_local = Llama(
+            model_path=MODEL_PATH, 
+            n_ctx=LLM_CTX_SIZE, # Используем переменную из .env
+            n_gpu_layers=-1, 
+            verbose=False
+        )
+    else:
+        print("WARNING: Local model file not found!")
+
 # 3. Silero TTS
 print(f"Loading Silero from: {SILERO_LOCAL_PATH}")
 
@@ -126,32 +144,84 @@ async def run_llm_pipeline(websocket: WebSocket, text: str):
     if not text: return
     await websocket.send_text(f"[User]: {text}")
 
-    if not llm: return
-
-    loop = asyncio.get_event_loop()
     sys_prompt = current_config["system_prompt"]
+    loop = asyncio.get_event_loop()
     
-    prompt = (
-        f"<|begin_of_text|>"
-        f"<|start_header_id|>system<|end_header_id|>\n\n{sys_prompt}<|eot_id|>"
-        f"<|start_header_id|>user<|end_header_id|>\n\n{text}<|eot_id|>"
-        f"<|start_header_id|>assistant<|end_header_id|>\n\n"
-    )
-    
-    stream = await loop.run_in_executor(executor, lambda: llm(prompt, max_tokens=256, stop=["<|eot_id|>"], stream=True))
-    
-    buffer = ""
-    for output in stream:
-        if asyncio.current_task().cancelled(): return
-        token = output['choices'][0]['text']
-        buffer += token
-        
-        if token in ['.', '!', '?', '\n'] and len(buffer.strip()) > 2:
-            await generate_tts(websocket, buffer, loop)
-            buffer = ""
+    # Генератор потока (зависит от выбранного бэкенда)
+    stream_iterator = None
+
+    if USE_OPENAI_API and aclient:
+        # --- Ветка OpenAI API ---
+        try:
+            stream = await aclient.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": text}
+                ],
+                stream=True
+            )
+            # Адаптер для унификации
+            async def openai_adapter():
+                async for chunk in stream:
+                    content = chunk.choices[0].delta.content
+                    if content: yield content
+            stream_iterator = openai_adapter()
             
-    if buffer.strip():
-        await generate_tts(websocket, buffer, loop)
+        except Exception as e:
+            print(f"API Error: {e}")
+            await websocket.send_text(f"[Error]: API connection failed: {e}")
+            return
+
+    elif llm_local:
+        # --- Ветка Local Llama ---
+        prompt = (
+            f"<|begin_of_text|>"
+            f"<|start_header_id|>system<|end_header_id|>\n\n{sys_prompt}<|eot_id|>"
+            f"<|start_header_id|>user<|end_header_id|>\n\n{text}<|eot_id|>"
+            f"<|start_header_id|>assistant<|end_header_id|>\n\n"
+        )
+        
+        # Запускаем синхронный генератор в executor'е, но читаем его асинхронно? 
+        # Llama-cpp stream синхронный. Лучше использовать итератор.
+        def local_gen():
+            return llm_local(prompt, max_tokens=512, stop=["<|eot_id|>"], stream=True)
+            
+        stream_obj = await loop.run_in_executor(executor, local_gen)
+        
+        async def local_adapter():
+            for output in stream_obj:
+                # Проверка отмены задачи внутри синхронного цикла сложна, 
+                # но мы проверяем asyncio.current_task() в цикле потребления
+                yield output['choices'][0]['text']
+        stream_iterator = local_adapter()
+    
+    else:
+        await websocket.send_text("[Error]: No LLM loaded.")
+        return
+
+    # --- ОБЩИЙ ЦИКЛ ОБРАБОТКИ ТОКЕНОВ ---
+    buffer = ""
+    try:
+        async for token in stream_iterator:
+            if asyncio.current_task().cancelled(): 
+                print("Generation cancelled.")
+                return
+
+            buffer += token
+            
+            # Эвристика конца предложения
+            if token in ['.', '!', '?', '\n', ';'] and len(buffer.strip()) > 5:
+                # Отправляем на озвучку
+                await generate_tts(websocket, buffer, loop)
+                buffer = ""
+        
+        # Остаток
+        if buffer.strip():
+            await generate_tts(websocket, buffer, loop)
+            
+    except Exception as e:
+        print(f"Stream Error: {e}")
 
 async def generate_tts(websocket: WebSocket, text: str, loop):
     await websocket.send_text(f"[AI]: {text}")

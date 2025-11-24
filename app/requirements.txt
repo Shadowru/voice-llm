@@ -8,3 +8,4 @@ llama-cpp-python
 scipy
 torch --index-url https://download.pytorch.org/whl/cpu
 torchaudio --index-url https://download.pytorch.org/whl/cpu
+openai
