@@ -14,7 +14,7 @@ from llama_cpp import Llama
 # --- КОНФИГУРАЦИЯ ---
 MODEL_PATH = os.getenv("MODEL_PATH", "/app/models/model.gguf")
 WHISPER_SIZE = os.getenv("WHISPER_SIZE", "base")
-SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "Ты голосовой помощник.")
+SYSTEM_PROMPT_FILE = os.getenv("SYSTEM_PROMPT_FILE", "/app/prompts/system.txt")
 
 # Настройки Silero
 #SILERO_MODEL_URL = "https://models.silero.ai/models/tts/ru/v4_ru.pt"
@@ -30,6 +30,20 @@ app.mount("/static", StaticFiles(directory="static", html=True), name="static")
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
 print("--- INIT ---")
+
+# Функция для загрузки промпта
+def get_system_prompt():
+    """Читает промпт из файла. Если файла нет, возвращает дефолт."""
+    if os.path.exists(SYSTEM_PROMPT_FILE):
+        try:
+            with open(SYSTEM_PROMPT_FILE, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception as e:
+            print(f"Error reading prompt file: {e}")
+    
+    # Фолбэк, если файла нет
+    return "Ты полезный голосовой ассистент. Отвечай кратко."
+
 
 # 1. Загрузка Whisper
 print("Loading Whisper...")
@@ -74,9 +88,11 @@ async def process_audio_task(websocket: WebSocket, audio_data: bytes):
 
         # --- LLM ---
         if llm:
+            current_system_prompt = get_system_prompt()
+
             prompt = (
                 f"<|begin_of_text|>"
-                f"<|start_header_id|>system<|end_header_id|>\n\n{SYSTEM_PROMPT}<|eot_id|>"
+                f"<|start_header_id|>system<|end_header_id|>\n\n{current_system_prompt}<|eot_id|>"
                 f"<|start_header_id|>user<|end_header_id|>\n\n{text}<|eot_id|>"
                 f"<|start_header_id|>assistant<|end_header_id|>\n\n"
             )

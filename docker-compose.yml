@@ -34,6 +34,7 @@ services:
       - .env
     volumes:
       - ./app/models:/app/models # Монтируем папку с моделями
+      - ./prompts:/app/prompts # Монтируем тесты промптов
     #deploy:
     #  resources:
     #    reservations:
