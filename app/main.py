@@ -17,10 +17,11 @@ WHISPER_SIZE = os.getenv("WHISPER_SIZE", "base")
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "Ты голосовой помощник.")
 
 # Настройки Silero
-SILERO_MODEL_URL = "https://models.silero.ai/models/tts/ru/v4_ru.pt"
-SILERO_LOCAL_PATH = "/app/models/silero_v4_ru.pt"
-SAMPLE_RATE = 48000
-SPEAKER = "xenia" # Варианты: aidar, baya, kseniya, xenia, eugene, random
+#SILERO_MODEL_URL = "https://models.silero.ai/models/tts/ru/v4_ru.pt"
+SILERO_MODEL_URL = "https://models.silero.ai/models/tts/ru/v5_ru.pt"
+SILERO_LOCAL_PATH = "/app/models/silero_v5_ru.pt"
+SAMPLE_RATE = 8000
+SPEAKER = "kseniya" # Варианты: aidar, baya, kseniya, xenia, eugene, random
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static", html=True), name="static")
