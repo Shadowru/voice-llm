@@ -6,6 +6,7 @@ import tempfile
 import io
 import scipy.io.wavfile
 import torch
+import traceback
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -170,6 +171,7 @@ async def run_llm_pipeline(websocket: WebSocket, text: str):
             
         except Exception as e:
             print(f"API Error: {e}")
+            traceback.print_exc()
             await websocket.send_text(f"[Error]: API connection failed: {e}")
             return
 
