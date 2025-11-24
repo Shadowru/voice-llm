@@ -34,13 +34,13 @@ services:
       - .env
     volumes:
       - ./app/models:/app/models # Монтируем папку с моделями
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    #deploy:
+    #  resources:
+    #    reservations:
+    #      devices:
+    #        - driver: nvidia
+    #          count: 1
+    #          capabilities: [gpu]
     labels:
       - "traefik.enable=true"
       
