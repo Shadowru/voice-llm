@@ -1,0 +1,9 @@
+{
+    "system_prompt": "Ты киберпанк-ассистент.",
+    "voice_speaker": "xenia",
+    "vad_threshold": 0.02,
+    "silence_duration": 1500,
+    "background_url": "",
+    "title_text": "AI CORE",
+    "sample_rate": 48000
+}

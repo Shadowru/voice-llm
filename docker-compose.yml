@@ -35,6 +35,7 @@ services:
     volumes:
       - ./app/models:/app/models # Монтируем папку с моделями
       - ./prompts:/app/prompts # Монтируем тесты промптов
+      - ./app/config.json:/app/config.json  # Монтируем конфиг
     #deploy:
     #  resources:
     #    reservations:
