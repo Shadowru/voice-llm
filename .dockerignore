@@ -1,0 +1,20 @@
+# Игнорируем папку с моделями (они будут монтироваться через volume)
+app/models
+models
+
+# Игнорируем папку с промптами (тоже через volume)
+prompts
+
+# Игнорируем виртуальное окружение и кэш python
+venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# Игнорируем git и настройки среды
+.git
+.env
+.gitignore
+docker-compose.yml
+README.md
