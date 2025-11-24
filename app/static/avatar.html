@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Avatar</title>
+    <style>
+        body { 
+            margin: 0; background: #000; overflow: hidden; 
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            height: 100vh; font-family: 'Courier New', monospace;
+        }
+
+        /* --- ЛИЦО РОБОТА --- */
+        .face-container {
+            position: relative; width: 300px; height: 400px;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            filter: drop-shadow(0 0 20px rgba(0, 255, 255, 0.5));
+            transition: filter 0.3s;
+        }
+
+        /* Глаза */
+        .eyes-row { display: flex; gap: 60px; margin-bottom: 40px; }
+        .eye {
+            width: 80px; height: 20px; background: #0ff;
+            border-radius: 10px;
+            box-shadow: 0 0 15px #0ff;
+            animation: blink 4s infinite;
+            transition: height 0.1s, background 0.3s;
+        }
+
+        /* Рот (Визуализация голоса) */
+        .mouth-container {
+            width: 100px; height: 10px; background: rgba(0, 255, 255, 0.2);
+            border-radius: 5px; display: flex; align-items: center; justify-content: center;
+            overflow: visible;
+        }
+        .mouth-bar {
+            width: 100%; height: 100%; background: #0ff;
+            border-radius: 5px;
+            box-shadow: 0 0 10px #0ff;
+            transition: height 0.05s ease-out; /* Плавность движения рта */
+        }
+
+        /* Субтитры */
+        .subtitles {
+            position: absolute; bottom: 50px; width: 80%; text-align: center;
+            color: #fff; font-size: 24px; text-shadow: 0 2px 5px #000;
+            min-height: 1.5em;
+        }
+
+        /* Анимации */
+        @keyframes blink {
+            0%, 48%, 52%, 100% { transform: scaleY(1); }
+            50% { transform: scaleY(0.1); }
+        }
+
+        /* Состояния */
+        body.listening .eye { background: #0f0; box-shadow: 0 0 15px #0f0; height: 30px; }
+        body.listening .mouth-bar { background: #0f0; box-shadow: 0 0 10px #0f0; }
+        
+        body.thinking .eye { background: #f0f; box-shadow: 0 0 15px #f0f; animation: none; height: 5px; }
+        body.thinking .mouth-bar { width: 20px; animation: spin 1s infinite; }
+        
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <div class="face-container">
+        <div class="eyes-row">
+            <div class="eye left"></div>
+            <div class="eye right"></div>
+        </div>
+        <div class="mouth-container">
+            <div class="mouth-bar" id="mouth"></div>
+        </div>
+    </div>
+
+    <div class="subtitles" id="subtitle">Нажмите для старта</div>
+
+    <script>
+        // --- Настройки ---
+        let config = {};
+        async function loadConfig() {
+            try {
+                const res = await fetch('/api/config');
+                config = await res.json();
+            } catch(e) {}
+        }
+        setInterval(loadConfig, 5000);
+        loadConfig();
+
+        // --- Аудио ---
+        let ws;
+        let audioContext, analyser, microphone;
+        let isRecording = false;
+        let silenceTimer = null;
+        let audioQueue = [];
+        let isPlaying = false;
+        let currentAudio = null;
+        
+        // Анализатор для рта (TTS)
+        let ttsAnalyser, ttsSource;
+
+        function connectWS() {
+            const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+            ws = new WebSocket(protocol + window.location.host + "/ws");
+            ws.onmessage = handleMessage;
+            ws.onclose = () => setTimeout(connectWS, 1000);
+        }
+
+        function handleMessage(event) {
+            if (typeof event.data === 'string') {
+                const text = event.data;
+                if (text.startsWith("[User]:")) {
+                    setStatus('thinking');
+                    document.getElementById('subtitle').innerText = text.replace("[User]:", "");
+                } else if (text.startsWith("[AI]:")) {
+                    document.getElementById('subtitle').innerText = text.replace("[AI]:", "");
+                }
+            } else {
+                const url = URL.createObjectURL(new Blob([event.data], { type: 'audio/wav' }));
+                audioQueue.push(url);
+                playQueue();
+            }
+        }
+
+        function setStatus(status) {
+            document.body.className = status; // listening, thinking, or empty (idle)
+        }
+
+        function playQueue() {
+            if (isPlaying || audioQueue.length === 0) return;
+            isPlaying = true;
+            setStatus(''); // Сброс в Idle, но рот будет работать от громкости
+            
+            const url = audioQueue.shift();
+            currentAudio = new Audio(url);
+            
+            // --- Подключаем аудио к анализатору для анимации рта ---
+            if (!audioContext) audioContext = new AudioContext();
+            ttsSource = audioContext.createMediaElementSource(currentAudio);
+            ttsAnalyser = audioContext.createAnalyser();
+            ttsAnalyser.fftSize = 32; // Маленький размер для быстродействия
+            ttsSource.connect(ttsAnalyser);
+            ttsAnalyser.connect(audioContext.destination); // Вывод в динамики
+            
+            animateMouth(); // Запуск анимации рта
+
+            currentAudio.onended = () => {
+                isPlaying = false;
+                playQueue();
+            };
+            currentAudio.play();
+        }
+
+        function animateMouth() {
+            if (!isPlaying || !ttsAnalyser) {
+                document.getElementById('mouth').style.height = '10px';
+                return;
+            }
+            const dataArray = new Uint8Array(ttsAnalyser.frequencyBinCount);
+            ttsAnalyser.getByteFrequencyData(dataArray);
+            
+            // Берем среднюю громкость
+            let sum = 0;
+            for(let i=0; i<dataArray.length; i++) sum += dataArray[i];
+            let vol = sum / dataArray.length; // 0 - 255
+            
+            // Масштабируем рот
+            // vol/255 * 100px (макс высота)
+            let height = 5 + (vol / 255) * 150; 
+            document.getElementById('mouth').style.height = height + 'px';
+
+            requestAnimationFrame(animateMouth);
+        }
+
+        function stopPlayback() {
+            if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+            audioQueue = [];
+            isPlaying = false;
+            document.getElementById('mouth').style.height = '10px';
+        }
+
+        // --- VAD (Микрофон) ---
+        async function initAudio() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                if (!audioContext) audioContext = new AudioContext();
+                
+                analyser = audioContext.createAnalyser();
+                microphone = audioContext.createMediaStreamSource(stream);
+                microphone.connect(analyser);
+                
+                let chunks = [];
+                const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                recorder.ondataavailable = e => chunks.push(e.data);
+                recorder.onstop = () => {
+                    if (chunks.length) {
+                        stopPlayback();
+                        ws.send(new Blob(chunks, { type: 'audio/wav' }));
+                        chunks = [];
+                    }
+                };
+
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                function loop() {
+                    analyser.getByteFrequencyData(dataArray);
+                    let sum = 0;
+                    for(let i=0; i<dataArray.length; i++) sum += dataArray[i];
+                    let vol = sum / dataArray.length / 255;
+
+                    // VAD Logic
+                    const threshold = config.vad_threshold || 0.02;
+                    if (vol > threshold) {
+                        if (!isRecording) {
+                            isRecording = true;
+                            recorder.start();
+                            setStatus('listening');
+                        }
+                        clearTimeout(silenceTimer);
+                    } else {
+                        if (isRecording && !silenceTimer) {
+                            silenceTimer = setTimeout(() => {
+                                isRecording = false;
+                                recorder.stop();
+                                silenceTimer = null;
+                                setStatus('thinking');
+                            }, config.silence_duration || 1500);
+                        }
+                    }
+                    requestAnimationFrame(loop);
+                }
+                loop();
+                document.getElementById('subtitle').innerText = "Я вас слушаю...";
+
+            } catch (e) { console.error(e); }
+        }
+
+        document.body.onclick = () => { if (!audioContext) initAudio(); };
+        connectWS();
+    </script>
+</body>
+</html>
