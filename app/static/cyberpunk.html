@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Cyberpunk Avatar</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --neon-cyan: #00f3ff;
+            --neon-pink: #ff00ff;
+            --neon-yellow: #ffe600;
+            --bg-dark: #050505;
+        }
+
+        body {
+            margin: 0; background-color: var(--bg-dark); overflow: hidden;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            height: 100vh; color: var(--neon-cyan);
+            font-family: 'Orbitron', sans-serif;
+            background-image: 
+                linear-gradient(rgba(0, 255, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 255, 255, 0.03) 1px, transparent 1px);
+            background-size: 40px 40px;
+        }
+
+        /* Эффект сканлайнов (CRT монитор) */
+        .scanlines {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,0.2) 50%, rgba(0,0,0,0.2));
+            background-size: 100% 4px; pointer-events: none; z-index: 10;
+        }
+
+        /* --- HUD КОНТЕЙНЕР --- */
+        .hud-container {
+            position: relative; width: 400px; height: 400px;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+        }
+
+        /* Вращающиеся кольца */
+        .ring {
+            position: absolute; border-radius: 50%; border: 2px solid var(--neon-cyan);
+            opacity: 0.3; box-shadow: 0 0 10px var(--neon-cyan);
+        }
+        .ring-1 { width: 380px; height: 380px; border-bottom-color: transparent; border-right-color: transparent; animation: spin 10s linear infinite; }
+        .ring-2 { width: 340px; height: 340px; border: 2px dashed var(--neon-pink); animation: spin-rev 15s linear infinite; opacity: 0.5; }
+        .ring-3 { width: 420px; height: 420px; border: 1px solid var(--neon-yellow); opacity: 0.1; }
+
+        /* --- ЛИЦО --- */
+        .face { z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 40px; }
+
+        /* Глаза */
+        .eyes-row { display: flex; gap: 60px; }
+        .eye {
+            width: 80px; height: 25px; background: var(--neon-cyan);
+            clip-path: polygon(10% 0, 100% 0, 90% 100%, 0% 100%);
+            box-shadow: 0 0 20px var(--neon-cyan);
+            position: relative; overflow: hidden;
+        }
+        /* Зрачок-сканер */
+        .eye::after {
+            content: ''; position: absolute; top: 0; left: -100%; width: 100%; height: 100%;
+            background: rgba(255,255,255,0.8);
+            animation: scan 2s infinite;
+        }
+
+        /* Рот (Эквалайзер) */
+        .mouth-eq {
+            display: flex; gap: 5px; height: 60px; align-items: center;
+        }
+        .bar {
+            width: 10px; height: 5px; background: var(--neon-pink);
+            box-shadow: 0 0 10px var(--neon-pink);
+            transition: height 0.05s ease;
+        }
+
+        /* Текст */
+        .status-text {
+            margin-top: 40px; font-family: 'Share Tech Mono', monospace;
+            font-size: 1.5rem; text-transform: uppercase; letter-spacing: 3px;
+            text-shadow: 0 0 10px var(--neon-cyan);
+        }
+        .subtitle {
+            position: absolute; bottom: 50px; width: 80%; text-align: center;
+            font-family: 'Share Tech Mono', monospace; font-size: 1.2rem;
+            color: #fff; background: rgba(0,0,0,0.7); padding: 10px; border: 1px solid var(--neon-cyan);
+        }
+
+        /* --- АНИМАЦИИ --- */
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes spin-rev { 0% { transform: rotate(360deg); } 100% { transform: rotate(0deg); } }
+        @keyframes scan { 0% { left: -100%; } 50% { left: 100%; } 100% { left: 100%; } }
+        
+        /* Глитч эффект */
+        .glitch-anim { animation: glitch 0.3s infinite; }
+        @keyframes glitch {
+            0% { transform: translate(0); }
+            20% { transform: translate(-2px, 2px); }
+            40% { transform: translate(-2px, -2px); }
+            60% { transform: translate(2px, 2px); }
+            80% { transform: translate(2px, -2px); }
+            100% { transform: translate(0); }
+        }
+
+        /* Состояния */
+        body.listening .eye { background: var(--neon-yellow); box-shadow: 0 0 20px var(--neon-yellow); }
+        body.listening .ring-2 { border-color: var(--neon-yellow); animation-duration: 2s; }
+        
+        body.thinking .eye { background: var(--neon-pink); animation: blink 0.2s infinite; }
+        body.thinking .status-text { color: var(--neon-pink); text-shadow: 0 0 10px var(--neon-pink); }
+
+    </style>
+</head>
+<body>
+    <div class="scanlines"></div>
+
+    <div class="hud-container">
+        <div class="ring ring-1"></div>
+        <div class="ring ring-2"></div>
+        <div class="ring ring-3"></div>
+        
+        <div class="face" id="face">
+            <div class="eyes-row">
+                <div class="eye"></div>
+                <div class="eye"></div>
+            </div>
+            <!-- 10 полосок эквалайзера -->
+            <div class="mouth-eq" id="mouth">
+                <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+                <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="status-text" id="status">SYSTEM READY</div>
+    <div class="subtitle" id="subtitle">Нажмите для инициализации протокола</div>
+
+    <script>
+        // --- Config ---
+        let config = {};
+        async function loadConfig() { try { config = await (await fetch('/api/config')).json(); } catch(e){} }
+        loadConfig();
+
+        // --- Audio & WS ---
+        let ws, audioContext, analyser, microphone, ttsAnalyser, ttsSource;
+        let isRecording = false, silenceTimer = null, audioQueue = [], isPlaying = false, currentAudio = null;
+
+        function connectWS() {
+            const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+            ws = new WebSocket(protocol + window.location.host + "/ws");
+            ws.onmessage = handleMessage;
+            ws.onclose = () => setTimeout(connectWS, 1000);
+        }
+
+        function handleMessage(event) {
+            if (typeof event.data === 'string') {
+                const text = event.data;
+                if (text.startsWith("[User]:")) {
+                    setStatus('thinking', "PROCESSING DATA...");
+                    document.getElementById('subtitle').innerText = "> " + text.replace("[User]:", "");
+                } else if (text.startsWith("[AI]:")) {
+                    document.getElementById('subtitle').innerText = text.replace("[AI]:", "");
+                }
+            } else {
+                audioQueue.push(URL.createObjectURL(new Blob([event.data], { type: 'audio/wav' })));
+                playQueue();
+            }
+        }
+
+        function setStatus(state, text) {
+            document.body.className = state;
+            if (text) document.getElementById('status').innerText = text;
+            
+            const face = document.getElementById('face');
+            if (state === 'thinking') face.classList.add('glitch-anim');
+            else face.classList.remove('glitch-anim');
+        }
+
+        function playQueue() {
+            if (isPlaying || audioQueue.length === 0) return;
+            isPlaying = true;
+            setStatus('', "VOCALIZING");
+            
+            currentAudio = new Audio(audioQueue.shift());
+            
+            if (!audioContext) audioContext = new AudioContext();
+            ttsSource = audioContext.createMediaElementSource(currentAudio);
+            ttsAnalyser = audioContext.createAnalyser();
+            ttsAnalyser.fftSize = 64; // Больше данных для полосок
+            ttsSource.connect(ttsAnalyser);
+            ttsAnalyser.connect(audioContext.destination);
+            
+            animateEqualizer();
+
+            currentAudio.onended = () => { isPlaying = false; playQueue(); };
+            currentAudio.play();
+        }
+
+        function animateEqualizer() {
+            if (!isPlaying || !ttsAnalyser) {
+                document.querySelectorAll('.bar').forEach(b => b.style.height = '5px');
+                return;
+            }
+            const dataArray = new Uint8Array(ttsAnalyser.frequencyBinCount);
+            ttsAnalyser.getByteFrequencyData(dataArray);
+            
+            const bars = document.querySelectorAll('.bar');
+            // Берем только низкие частоты (они лучше отражают голос)
+            for(let i=0; i<bars.length; i++) {
+                // Индекс смещения (пропускаем самые низкие басы 0-2)
+                const val = dataArray[i + 2] || 0;
+                const h = 5 + (val / 255) * 50;
+                bars[i].style.height = h + 'px';
+            }
+            requestAnimationFrame(animateEqualizer);
+        }
+
+        function stopPlayback() {
+            if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+            audioQueue = [];
+            isPlaying = false;
+            document.querySelectorAll('.bar').forEach(b => b.style.height = '5px');
+        }
+
+        async function initAudio() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                audioContext = new AudioContext();
+                analyser = audioContext.createAnalyser();
+                microphone = audioContext.createMediaStreamSource(stream);
+                microphone.connect(analyser);
+                
+                let chunks = [];
+                const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                recorder.ondataavailable = e => chunks.push(e.data);
+                recorder.onstop = () => {
+                    if (chunks.length) {
+                        stopPlayback();
+                        ws.send(new Blob(chunks, { type: 'audio/wav' }));
+                        chunks = [];
+                    }
+                };
+
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                function loop() {
+                    analyser.getByteFrequencyData(dataArray);
+                    let sum = 0;
+                    for(let i=0; i<dataArray.length; i++) sum += dataArray[i];
+                    let vol = sum / dataArray.length / 255;
+
+                    const threshold = config.vad_threshold || 0.02;
+                    if (vol > threshold) {
+                        if (!isRecording) {
+                            isRecording = true;
+                            recorder.start();
+                            setStatus('listening', "RECORDING INPUT");
+                        }
+                        clearTimeout(silenceTimer);
+                    } else {
+                        if (isRecording && !silenceTimer) {
+                            silenceTimer = setTimeout(() => {
+                                isRecording = false;
+                                recorder.stop();
+                                silenceTimer = null;
+                            }, config.silence_duration || 1500);
+                        }
+                    }
+                    requestAnimationFrame(loop);
+                }
+                loop();
+                setStatus('', "AWAITING INPUT");
+
+            } catch (e) { console.error(e); }
+        }
+
+        document.body.onclick = () => { if (!audioContext) initAudio(); };
+        connectWS();
+    </script>
+</body>
+</html>
