@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Kiosk</title>
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; font-family: 'Roboto', sans-serif; }
+        
+        /* Фон */
+        .bg {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background-size: cover; background-position: center;
+            filter: brightness(0.4); z-index: -1;
+            transition: background-image 1s ease;
+        }
+
+        /* Контейнер */
+        .container {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            height: 100%; color: white; text-align: center;
+        }
+
+        h1 { font-size: 4rem; margin-bottom: 20px; text-shadow: 0 0 20px rgba(0,0,0,0.8); }
+
+        /* Визуализатор */
+        .visualizer-circle {
+            width: 200px; height: 200px; border-radius: 50%;
+            border: 5px solid rgba(255,255,255,0.2);
+            display: flex; align-items: center; justify-content: center;
+            position: relative; margin: 50px;
+            box-shadow: 0 0 50px rgba(0, 200, 255, 0.2);
+            transition: all 0.1s;
+        }
+        .visualizer-inner {
+            width: 180px; height: 180px; border-radius: 50%;
+            background: radial-gradient(circle, #00c6ff, #0072ff);
+            opacity: 0.8; transform: scale(1); transition: transform 0.05s;
+        }
+
+        /* Субтитры */
+        .subtitles {
+            font-size: 2.5rem; max-width: 80%; min-height: 150px;
+            text-shadow: 0 2px 10px black; line-height: 1.4;
+        }
+        .sub-user { color: #aaa; font-size: 2rem; font-style: italic; }
+        .sub-ai { color: #fff; font-weight: bold; }
+
+        /* Статус */
+        .status { margin-top: 20px; font-size: 1.2rem; letter-spacing: 2px; text-transform: uppercase; opacity: 0.7; }
+    </style>
+</head>
+<body>
+    <div class="bg" id="bg"></div>
+    <div class="container">
+        <h1 id="title">AI Assistant</h1>
+        
+        <div class="visualizer-circle" id="visCircle">
+            <div class="visualizer-inner" id="visInner"></div>
+        </div>
+
+        <div class="subtitles">
+            <div id="subUser" class="sub-user">...</div>
+            <div id="subAI" class="sub-ai">Привет! Я готов к разговору.</div>
+        </div>
+        
+        <div class="status" id="status">Ожидание</div>
+    </div>
+
+    <script>
+        // --- Конфигурация ---
+        let config = {};
+        async function loadConfig() {
+            const res = await fetch('/api/config');
+            config = await res.json();
+            document.getElementById('bg').style.backgroundImage = `url('${config.background_url}')`;
+            document.getElementById('title').innerText = config.title_text;
+            // Перезапуск VAD с новыми параметрами если нужно
+        }
+        setInterval(loadConfig, 5000); // Проверяем обновления конфига каждые 5 сек
+        loadConfig();
+
+        // --- Аудио Логика ---
+        let audioContext, analyser, microphone;
+        let isRecording = false;
+        let silenceTimer = null;
+        let ws;
+        let audioQueue = [];
+        let isPlaying = false;
+        let currentAudio = null;
+
+        // Подключение WS
+        function connectWS() {
+            const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+            ws = new WebSocket(protocol + window.location.host + "/ws");
+            ws.onmessage = handleMessage;
+            ws.onclose = () => setTimeout(connectWS, 1000);
+        }
+
+        function handleMessage(event) {
+            if (typeof event.data === 'string') {
+                const text = event.data;
+                if (text.startsWith("[User]:")) {
+                    document.getElementById('subUser').innerText = text.replace("[User]:", "");
+                    document.getElementById('status').innerText = "Думаю...";
+                } else if (text.startsWith("[AI]:")) {
+                    document.getElementById('subAI').innerText = text.replace("[AI]:", "");
+                    document.getElementById('status').innerText = "Говорю...";
+                }
+            } else {
+                // Audio Blob
+                const url = URL.createObjectURL(new Blob([event.data], { type: 'audio/wav' }));
+                audioQueue.push(url);
+                playQueue();
+            }
+        }
+
+        function playQueue() {
+            if (isPlaying || audioQueue.length === 0) return;
+            isPlaying = true;
+            currentAudio = new Audio(audioQueue.shift());
+            currentAudio.onended = () => { isPlaying = false; playQueue(); };
+            currentAudio.play();
+            
+            // Анимация говорения (простая)
+            const visInner = document.getElementById('visInner');
+            visInner.style.background = "radial-gradient(circle, #ff00cc, #333399)";
+            currentAudio.onpause = () => visInner.style.background = "radial-gradient(circle, #00c6ff, #0072ff)";
+        }
+
+        function stopPlayback() {
+            if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+            audioQueue = [];
+            isPlaying = false;
+        }
+
+        // --- VAD и Визуализация ---
+        async function initAudio() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                audioContext = new AudioContext();
+                analyser = audioContext.createAnalyser();
+                microphone = audioContext.createMediaStreamSource(stream);
+                microphone.connect(analyser);
+                
+                // MediaRecorder
+                let chunks = [];
+                const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                recorder.ondataavailable = e => chunks.push(e.data);
+                recorder.onstop = () => {
+                    if (chunks.length) {
+                        stopPlayback(); // Перебиваем
+                        ws.send(new Blob(chunks, { type: 'audio/wav' }));
+                        chunks = [];
+                        document.getElementById('status').innerText = "Обработка...";
+                    }
+                };
+
+                // Цикл анализа
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                const visInner = document.getElementById('visInner');
+                const visCircle = document.getElementById('visCircle');
+
+                function loop() {
+                    analyser.getByteFrequencyData(dataArray);
+                    let sum = 0;
+                    for(let i=0; i<dataArray.length; i++) sum += dataArray[i];
+                    let vol = sum / dataArray.length / 255; // 0.0 - 1.0
+
+                    // Визуализация (пульсация)
+                    let scale = 1 + vol * 1.5;
+                    visInner.style.transform = `scale(${scale})`;
+                    visCircle.style.borderColor = `rgba(255,255,255,${0.2 + vol})`;
+
+                    // VAD Логика
+                    if (config.vad_threshold) {
+                        if (vol > config.vad_threshold) {
+                            if (!isRecording) {
+                                isRecording = true;
+                                recorder.start();
+                                document.getElementById('status').innerText = "Слушаю...";
+                            }
+                            clearTimeout(silenceTimer);
+                        } else {
+                            if (isRecording && !silenceTimer) {
+                                silenceTimer = setTimeout(() => {
+                                    isRecording = false;
+                                    recorder.stop();
+                                    silenceTimer = null;
+                                }, config.silence_duration || 1500);
+                            }
+                        }
+                    }
+                    requestAnimationFrame(loop);
+                }
+                loop();
+
+            } catch (e) { console.error(e); alert("Нужен микрофон!"); }
+        }
+
+        document.body.onclick = () => { if (!audioContext) initAudio(); };
+        connectWS();
+    </script>
+</body>
+</html>

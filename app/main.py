@@ -1,149 +1,144 @@
 import os
+import json
 import asyncio
-import tempfile
 import concurrent.futures
+import tempfile
 import io
 import scipy.io.wavfile
-import torch # Добавили torch
-
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import torch
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from faster_whisper import WhisperModel
 from llama_cpp import Llama
 
-# --- КОНФИГУРАЦИЯ ---
+# --- Файл конфигурации ---
+CONFIG_FILE = "/app/config.json"
+
+# Дефолтные настройки
+DEFAULT_CONFIG = {
+    "system_prompt": "Ты дружелюбный помощник на мероприятии. Отвечай весело и коротко.",
+    "voice_speaker": "xenia", # aidar, baya, kseniya, xenia, eugene
+    "vad_threshold": 0.02,
+    "silence_duration": 1500,
+    "background_url": "/static/bg.jpg",
+    "title_text": "Поговори с ИИ"
+}
+
+# Загрузка конфига
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return {**DEFAULT_CONFIG, **json.load(f)}
+    return DEFAULT_CONFIG
+
+def save_config(new_config):
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(new_config, f, ensure_ascii=False, indent=4)
+
+# Глобальная переменная конфига (обновляется на лету)
+current_config = load_config()
+
+# --- Инициализация Моделей (как раньше) ---
 MODEL_PATH = os.getenv("MODEL_PATH", "/app/models/model.gguf")
 WHISPER_SIZE = os.getenv("WHISPER_SIZE", "base")
-SYSTEM_PROMPT_FILE = os.getenv("SYSTEM_PROMPT_FILE", "/app/prompts/system.txt")
-
-# Настройки Silero
-#SILERO_MODEL_URL = "https://models.silero.ai/models/tts/ru/v4_ru.pt"
-SILERO_MODEL_URL = "https://models.silero.ai/models/tts/ru/v5_ru.pt"
 SILERO_LOCAL_PATH = "/app/models/silero_v5_ru.pt"
-SAMPLE_RATE = 8000
-SPEAKER = "kseniya" # Варианты: aidar, baya, kseniya, xenia, eugene, random
 
-app = FastAPI()
-app.mount("/static", StaticFiles(directory="static", html=True), name="static")
-
-# Глобальный экзекьютор
-executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-
-print("--- INIT ---")
-
-# Функция для загрузки промпта
-def get_system_prompt():
-    """Читает промпт из файла. Если файла нет, возвращает дефолт."""
-    if os.path.exists(SYSTEM_PROMPT_FILE):
-        try:
-            with open(SYSTEM_PROMPT_FILE, "r", encoding="utf-8") as f:
-                return f.read().strip()
-        except Exception as e:
-            print(f"Error reading prompt file: {e}")
-    
-    # Фолбэк, если файла нет
-    return "Ты полезный голосовой ассистент. Отвечай кратко."
-
-
-# 1. Загрузка Whisper
-print("Loading Whisper...")
+print("Loading Models...")
 stt_model = WhisperModel(WHISPER_SIZE, device="auto", compute_type="int8")
 
-# 2. Загрузка LLM
-print("Loading LLM...")
 if os.path.exists(MODEL_PATH):
     llm = Llama(model_path=MODEL_PATH, n_ctx=2048, n_gpu_layers=-1, verbose=False)
 else:
     llm = None
-    print("WARNING: LLM model not found.")
 
-# 3. Загрузка Silero TTS
-print("Loading Silero TTS...")
+device = torch.device('cpu')
 if not os.path.exists(SILERO_LOCAL_PATH):
-    print(f"Downloading Silero model to {SILERO_LOCAL_PATH}...")
-    torch.hub.download_url_to_file(SILERO_MODEL_URL, SILERO_LOCAL_PATH)
-
-device = torch.device('cpu') # Silero летает и на CPU
+    torch.hub.download_url_to_file("https://models.silero.ai/models/tts/ru/v5_ru.pt", SILERO_LOCAL_PATH)
 silero_model = torch.package.PackageImporter(SILERO_LOCAL_PATH).load_pickle("tts_models", "model")
 silero_model.to(device)
-print("Silero Ready.")
+
+app = FastAPI()
+app.mount("/static", StaticFiles(directory="static", html=True), name="static")
+executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+
+# --- API для Админки ---
+
+class ConfigModel(BaseModel):
+    system_prompt: str
+    voice_speaker: str
+    vad_threshold: float
+    silence_duration: int
+    background_url: str
+    title_text: str
+
+@app.get("/api/config")
+def get_config():
+    return current_config
+
+@app.post("/api/config")
+def update_config(config: ConfigModel):
+    global current_config
+    current_config = config.dict()
+    save_config(current_config)
+    return {"status": "ok", "config": current_config}
+
+# --- Логика Обработки ---
 
 async def process_audio_task(websocket: WebSocket, audio_data: bytes):
-    tmp_path = None
-    try:
-        loop = asyncio.get_event_loop()
+    # Используем current_config вместо хардкода
+    
+    # 1. STT
+    loop = asyncio.get_event_loop()
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(audio_data)
+        tmp_path = tmp.name
+
+    segments, _ = await loop.run_in_executor(executor, lambda: stt_model.transcribe(tmp_path, beam_size=5))
+    text = " ".join([s.text for s in list(segments)]).strip()
+    if tmp_path: os.remove(tmp_path)
+    if not text: return
+
+    await websocket.send_text(f"[User]: {text}")
+
+    # 2. LLM
+    if llm:
+        # Берем промпт из конфига!
+        sys_prompt = current_config["system_prompt"]
         
-        # --- STT ---
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp.write(audio_data)
-            tmp_path = tmp.name
-
-        segments, _ = await loop.run_in_executor(executor, lambda: stt_model.transcribe(tmp_path, beam_size=5))
-        text = " ".join([s.text for s in list(segments)]).strip()
+        prompt = (
+            f"<|begin_of_text|>"
+            f"<|start_header_id|>system<|end_header_id|>\n\n{sys_prompt}<|eot_id|>"
+            f"<|start_header_id|>user<|end_header_id|>\n\n{text}<|eot_id|>"
+            f"<|start_header_id|>assistant<|end_header_id|>\n\n"
+        )
         
-        if tmp_path: os.remove(tmp_path)
-        if not text: return
+        stream = await loop.run_in_executor(executor, lambda: llm(prompt, max_tokens=256, stop=["<|eot_id|>"], stream=True))
+        
+        buffer = ""
+        for output in stream:
+            if asyncio.current_task().cancelled(): return
+            token = output['choices'][0]['text']
+            buffer += token
+            if token in ['.', '!', '?', '\n'] and len(buffer.strip()) > 2:
+                await generate_tts(websocket, buffer, loop)
+                buffer = ""
+        if buffer.strip():
+            await generate_tts(websocket, buffer, loop)
 
-        await websocket.send_text(f"[User]: {text}")
-
-        # --- LLM ---
-        if llm:
-            current_system_prompt = get_system_prompt()
-
-            prompt = (
-                f"<|begin_of_text|>"
-                f"<|start_header_id|>system<|end_header_id|>\n\n{current_system_prompt}<|eot_id|>"
-                f"<|start_header_id|>user<|end_header_id|>\n\n{text}<|eot_id|>"
-                f"<|start_header_id|>assistant<|end_header_id|>\n\n"
-            )
-            
-            stream = await loop.run_in_executor(executor, lambda: llm(prompt, max_tokens=256, stop=["<|eot_id|>"], stream=True))
-            
-            buffer = ""
-            for output in stream:
-                if asyncio.current_task().cancelled(): return
-
-                token = output['choices'][0]['text']
-                buffer += token
-                
-                # Разбиваем на предложения для TTS
-                if token in ['.', '!', '?', '\n'] and len(buffer.strip()) > 2:
-                    await generate_and_send_silero(websocket, buffer, loop)
-                    buffer = ""
-            
-            if buffer.strip():
-                await generate_and_send_silero(websocket, buffer, loop)
-
-    except asyncio.CancelledError:
-        print("Task Cancelled")
-        if tmp_path and os.path.exists(tmp_path): os.remove(tmp_path)
-    except Exception as e:
-        print(f"Error: {e}")
-
-async def generate_and_send_silero(websocket: WebSocket, text: str, loop):
-    """Генерация аудио через Silero и отправка WAV байтов"""
+async def generate_tts(websocket: WebSocket, text: str, loop):
     await websocket.send_text(f"[AI]: {text}")
+    speaker = current_config["voice_speaker"] # Берем голос из конфига
     
     def _tts():
-        # Silero блокирует поток, поэтому запускаем внутри executor
-        # apply_tts возвращает Tensor
-        audio_tensor = silero_model.apply_tts(text=text,
-                                              speaker=SPEAKER,
-                                              sample_rate=SAMPLE_RATE)
-        return audio_tensor
+        return silero_model.apply_tts(text=text, speaker=speaker, sample_rate=48000)
 
     try:
-        # Запускаем в отдельном потоке
         audio_tensor = await loop.run_in_executor(executor, _tts)
-        
-        # Конвертируем Tensor -> WAV Bytes
-        # Silero возвращает float32, браузеры это понимают
         buff = io.BytesIO()
-        # Переводим в numpy и сохраняем как WAV
-        scipy.io.wavfile.write(buff, SAMPLE_RATE, audio_tensor.numpy())
-        
+        scipy.io.wavfile.write(buff, 48000, audio_tensor.numpy())
         await websocket.send_bytes(buff.getvalue())
-        
     except Exception as e:
         print(f"TTS Error: {e}")
 
@@ -154,8 +149,7 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_bytes()
-            if current_task and not current_task.done():
-                current_task.cancel()
+            if current_task and not current_task.done(): current_task.cancel()
             current_task = asyncio.create_task(process_audio_task(websocket, data))
     except WebSocketDisconnect:
         if current_task: current_task.cancel()
