@@ -18,7 +18,7 @@ services:
       - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
       - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
     ports:
-      - "80:80"
+      #- "80:80"
       - "443:443"
       # - "8080:8080" # Раскомментируйте для доступа к Dashboard Traefik
     volumes:
