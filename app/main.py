@@ -67,7 +67,7 @@ stt_model = WhisperModel(WHISPER_SIZE, device="auto", compute_type="int8")
 # 2. LLM
 print(f"Loading LLM: {MODEL_PATH}...")
 if os.path.exists(MODEL_PATH):
-    llm = Llama(model_path=MODEL_PATH, n_ctx=2048, n_gpu_layers=-1, verbose=False)
+    llm = Llama(model_path=MODEL_PATH, n_ctx=4096, n_gpu_layers=-1, verbose=False)
 else:
     llm = None
     print("WARNING: LLM model not found.")
