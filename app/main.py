@@ -49,7 +49,7 @@ print("Loading Models...")
 stt_model = WhisperModel(WHISPER_SIZE, device="auto", compute_type="int8")
 
 if os.path.exists(MODEL_PATH):
-    llm = Llama(model_path=MODEL_PATH, n_ctx=2048, n_gpu_layers=-1, verbose=False)
+    llm = Llama(model_path=MODEL_PATH, n_ctx=8192, n_gpu_layers=-1, verbose=False)
 else:
     llm = None
 
